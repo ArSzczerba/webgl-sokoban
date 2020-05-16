@@ -1,0 +1,532 @@
+<html>
+
+<head>
+<title>SOKOBAN</title>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+	<!-- Bootstrap -->
+	<link href="assets/css/bootstrap.min.css" rel="stylesheet">
+	<link href="assets/css/main.css" rel="stylesheet">
+
+    <!-- HTML5 Shim and Respond.js IE8 support of HTML5 elements and media queries -->
+    <!-- WARNING: Respond.js doesn't work if you view the page via file:// -->
+    <!--[if lt IE 9]>
+      <script src="https://oss.maxcdn.com/html5shiv/3.7.2/html5shiv.min.js"></script>
+      <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+    <![endif]-->
+
+
+<script type="text/javascript" src="tools/jquery-1.8.2.min.js"></script>
+<script type="text/javascript" src="tools/glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="tools/webgl-utils.js"></script>
+
+<script type="application/x-javascript" src="scripts/WGLtools.js"></script>
+<script type="application/x-javascript" src="scripts/array_handler.js"></script>
+<script type="application/x-javascript" src="scripts/base_model.js"></script>
+<script type="application/x-javascript" src="scripts/hero.js"></script>
+<script type="application/x-javascript" src="scripts/nest.js"></script>
+
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    varying vec2 vTextureCoord;
+    uniform sampler2D uSampler;
+    void main(void) {
+        gl_FragColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec2 aTextureCoord;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+
+    varying vec2 vTextureCoord;
+
+
+    void main(void) {
+        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+        vTextureCoord = aTextureCoord;
+    }
+</script>
+
+
+<script type="text/javascript">
+
+    var gl;
+
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("experimental-webgl");
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;
+        } catch (e) {
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+    }
+
+
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+
+    var shaderProgram;
+
+    function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+    }
+
+
+
+
+    var mvMatrix = mat4.create();
+    var mvMatrixStack = [];
+    var pMatrix = mat4.create();
+
+    function mvPushMatrix() {
+        var copy = mat4.create();
+        mat4.set(mvMatrix, copy);
+        mvMatrixStack.push(copy);
+    }
+
+    function mvPopMatrix() {
+        if (mvMatrixStack.length == 0) {
+            throw "Invalid popMatrix!";
+        }
+        mvMatrix = mvMatrixStack.pop();
+    }
+
+
+    function setMatrixUniforms() {
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+    }
+
+
+    function degToRad(degrees) {
+        return degrees * Math.PI / 180;
+    }
+
+
+		var worldXRot = 60;
+		var worldXSpeed = 0;
+
+		var worldYRot = 0;
+		var worldYSpeed = 0;
+		
+		var worldZRot = 0;
+		var worldZSpeed = 0;
+		
+		var worldX;
+		var worldY;
+		var worldZ ;
+		var centerX = 0;
+		var centerZ = 0;
+		
+		var nextWorldYRot = 0;
+		var worldMove = 0;
+	function animate() 
+		{
+			
+			if(worldXRot<90 && worldXRot>-90){
+			//	worldXRot += (worldXSpeed * elapsed) / 10000.0;
+			} else {
+				worldXRot = 0;
+			}
+			if(Math.round(worldYRot, 0) == nextWorldYRot){
+				worldYRot = nextWorldYRot;
+				worldMove = 0;
+				if ( (worldYRot == 360) ||  (worldYRot == -360) ){
+					worldYRot = 0;
+					nextWorldYRot = 0;
+				}
+			} else {
+				worldYRot += (worldYSpeed * elapsed) / 10000.0;
+			}
+			worldZRot += (worldZSpeed * elapsed) / 10000.0;
+			
+		}
+	
+
+		var currentlyPressedKeys = {};
+
+		function handleKeyDown(event) {
+		  currentlyPressedKeys[event.keyCode] = true;
+		}
+	  
+		function handleKeyUp(event) {
+		  currentlyPressedKeys[event.keyCode] = false;
+		}
+		
+		var rotation = 0;
+		 function handleKeys() {
+			if (currentlyPressedKeys[87]) {
+			  // W Key
+				if( worldZ > 0 ) {
+					 worldZ -= 0.05;
+				} 
+			}
+			if (currentlyPressedKeys[83]) {
+			  // S Key
+				if( worldZ < centerZ ) {
+					 worldZ += 0.05;
+				} 
+			}
+			
+			if (currentlyPressedKeys[65]) {
+			  // A Key
+				if( worldX > 0 ) {
+				
+					 worldX -= 0.05;
+				} else {
+					
+				}
+			 
+			}
+			if (currentlyPressedKeys[68]) {
+			  // D Key
+				if( worldX < centerX+(centerX/2) ) {
+					 worldX += 0.05;
+				} 
+			}
+			
+			/*
+			if (currentlyPressedKeys[81]) {
+			  // Q key
+			  if(worldYSpeed>-300)
+			  worldYSpeed -= 1;
+			}
+			*/
+			/*
+			if (currentlyPressedKeys[69]) {
+			  // E key
+			  if(worldYSpeed<300)
+			  worldYSpeed += 1;
+			}
+			*/
+			
+			/*
+			if (currentlyPressedKeys[87]) {
+			  //W
+			   if(worldXSpeed>-300)
+			  worldXSpeed -= 1;
+			}
+			*/
+			/*
+			if (currentlyPressedKeys[83]) {
+			  // S
+			  if(worldXSpeed<300)
+			  worldXSpeed += 1;
+			}
+			*/
+			if (currentlyPressedKeys[81]) {
+			  // Q key
+				//console.log(worldYRot);
+				if(worldMove == 0){
+					nextWorldYRot = worldYRot + 90;
+					worldMove = 1;
+					worldYSpeed = 800;
+				}
+				
+			} 
+			
+			if (currentlyPressedKeys[69]) {
+			  // E key
+				
+				if(worldMove == 0){
+					nextWorldYRot = worldYRot - 90;
+					worldMove = 1;
+					worldYSpeed = -800;
+				}
+			  
+			}
+			if(currentlyPressedKeys[38] && hero.inMove == 0) {
+				//hero.move_forward()
+				hero.start_move('F');
+			} 
+			
+			if(currentlyPressedKeys[40] && hero.inMove == 0) {
+				//hero.move_back();
+				hero.start_move('B');
+			} 
+			
+			if(currentlyPressedKeys[37] && hero.inMove == 0) {
+				//hero.move_left();
+				hero.start_move('L');
+			} 
+			
+			if(currentlyPressedKeys[39] && hero.inMove == 0) {
+				//hero.move_right();
+				hero.start_move('R');
+			}
+			
+		  }
+
+
+	var tmp = 0;
+	var cameraMatrix = mat4.create();
+	var heroMatrix = mat4.create();
+	mat4.identity(heroMatrix);
+    function drawScene() {
+		
+		gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        
+		mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+		
+		mat4.identity(mvMatrix);
+		
+		mat4.translate(mvMatrix, [centerX, 0, -(centerZ)]);
+		mat4.rotate(mvMatrix, degToRad(worldXRot), [1, 0, 0]);
+		mat4.translate(mvMatrix, [-worldX, -1, -worldZ]);
+		
+		mvPushMatrix();
+		
+		//mat4.translate(mvMatrix, [1, 0, 1]);
+		
+		
+		mat4.rotate(mvMatrix, degToRad(0), [1, 0, 0]);
+		mat4.rotate(mvMatrix, degToRad(worldYRot), [0, 1, 0]);
+		mat4.rotate(mvMatrix, degToRad(worldZRot), [0, 0, 1]);
+		mat4.translate(mvMatrix, [-centerX, -(centerZ+centerX)/2, -centerZ]);
+		
+		mvPushMatrix();
+		
+		//mat4.translate(mvMatrix, [-centerX, 5, -centerZ]);
+		
+		for(i in Objects)
+			{
+				mvPushMatrix();
+				mat4.translate(mvMatrix, [Objects[i].PositionX, Objects[i].PositionY, Objects[i].PositionZ]);
+				
+				
+				if(Objects[i].type == 'hero'){
+					
+					if(hero.inMove == 1) {
+						
+						hero.move(hero.directory);
+					}
+				var newHeroMAtrix = mat4.create();
+				mat4.identity(newHeroMAtrix);
+				
+				
+				mat4.rotate(newHeroMAtrix, degToRad(Objects[i].Rot_x), [1, 0, 0]);
+				mat4.rotate(newHeroMAtrix, degToRad(Objects[i].Rot_z), [0, 0, 1]);
+				mat4.multiply(newHeroMAtrix, heroMatrix, heroMatrix);
+				mat4.multiply(mvMatrix, heroMatrix);
+				Objects[i].Rot_x = 0;
+				Objects[i].Rot_z = 0;
+				
+				}
+				
+				Objects[i].display();
+				 
+				mvPopMatrix();
+			}
+       
+			mvPopMatrix();
+			
+       mvPopMatrix();
+        
+    }
+
+
+    //time variables
+		var lastTime = 0;
+		var elapsed=0;
+		var elapsed_s=0;
+		function timeTick()
+		{
+			var timeNow = (new Date).getTime();
+			if (lastTime != 0)
+			{
+				elapsed = timeNow - lastTime;
+				elapsed_s=elapsed/1000;
+			}
+			lastTime = timeNow;
+		}
+
+
+    function tick() {
+		if(finish == 1){
+			Level++;
+			if (Level == 25) Level = 1;
+			loadWorld('level'+Level+'.lev');
+			finish = 0;
+			
+		} 
+		animate() 
+        handleKeys();
+        drawScene();
+        timeTick();
+    }
+	
+	a_handler = new array_handler;
+	m_hero.prototype = new Model;
+	c_model.prototype = new Model;
+	n_model.prototype = new Model;
+	var counter = 0;
+	var Level = 1;
+	var finish = 0;
+	var tickInterval;
+	function webGLStart() {
+        var canvas = document.getElementById("sokoban");
+        initGL(canvas);
+        initShaders();
+		loadWorld('level1.lev');
+		tick();
+		gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.enable(gl.DEPTH_TEST);
+
+        document.onkeydown = handleKeyDown;
+        document.onkeyup = handleKeyUp;
+		setInterval(tick, 30);
+		
+		
+    }
+	
+	function restart(){
+		loadWorld('level'+Level+'.lev');
+		nextWorldYRot = 0;
+		worldMove = 0;
+		worldYRot = 0;
+		worldYSpeed = 0;
+		
+	}
+	
+	function button_move_forward(){
+		if(hero.inMove == 0) {
+			hero.move_forward()
+		} 
+	}
+	
+	function button_move_back(){
+		if(hero.inMove == 0) {
+			hero.move_back()
+		} 
+	}
+	
+	function button_move_left(){
+		if(hero.inMove == 0) {
+			hero.move_left()
+		} 
+	}
+	
+	function button_move_right(){
+		if(hero.inMove == 0) {
+				hero.move_right()
+			} 
+	}
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();">
+   
+   <div class="container">
+	<div class="row">
+	  <div class="col-md-10"> <canvas id="sokoban" style="border: none; display: block; margin : auto;" width="800" height="600"></canvas></div>
+	  <div class="col-md-2">
+	   <button type="button" class="btn btn-primary" onClick="restart()">Restart</button>
+	   
+	   <div class="row">
+			<div class="col-md-4 col-md-offset-4" >
+				<span class="glyphicon glyphicon-arrow-up"  onClick="button_move_forward()"></span>
+				
+			</div>
+	   </div>
+	   <div class="row">
+			<div class="col-md-4 col-sm-4">
+				 <span class="glyphicon glyphicon-arrow-left" onClick="button_move_left()"></span>
+			</div>
+			<div class="col-md-4 col-md-offset-4" >
+				 <span class="glyphicon glyphicon-arrow-right" onClick="button_move_right()"></span>
+			</div>
+	   </div>
+	   <div class="row">
+	  <div class="col-md-4 col-md-offset-4" >
+				<span class="glyphicon glyphicon-arrow-down" onClick="button_move_back()"></span>
+				
+			</div>
+		</div>
+	   
+	   
+	  
+	   
+	  </div>
+	</div>
+    
+
+    </div><!-- /.container -->
+
+   
+   
+   <!-- jQuery (necessary for Bootstrap's JavaScript plugins) -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+    <!-- Include all compiled plugins (below), or include individual files as needed -->
+    <script src="assets/js/bootstrap.min.js"></script>
+</body>
+
+</html>
